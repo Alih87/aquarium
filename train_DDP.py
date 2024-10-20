@@ -10,7 +10,6 @@ from models.resnet_18_DCNN import ResNet50_FasterRCNN
 from utils.dataloader import Fish
 from torch.utils.data import DataLoader, DistributedSampler
 import torch.multiprocessing as mp
-import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
@@ -78,59 +77,61 @@ def train(NUM_CLASSES, EPOCHS, BATCH_SIZE, LR, MOMENTUM, WEIGHT_DECAY, GAMMA, ST
         scheduler.step()
 
         # Log training losses
-        wandb.log({
-            "classifier_loss_train": sum(classifier_loss_train) / len(classifier_loss_train),
-            "regression_loss_train": sum(regression_loss_train) / len(regression_loss_train),
-            "objectness_loss_train": sum(objectness_loss_train) / len(objectness_loss_train),
-            "rpn_loss_train": sum(rpn_loss_train) / len(rpn_loss_train),
-            "total_loss": sum(total_loss) / len(total_loss)
-            })
+        if gpu_id == 0:
+            wandb.log({
+                "classifier_loss_train": sum(classifier_loss_train) / len(classifier_loss_train),
+                "regression_loss_train": sum(regression_loss_train) / len(regression_loss_train),
+                "objectness_loss_train": sum(objectness_loss_train) / len(objectness_loss_train),
+                "rpn_loss_train": sum(rpn_loss_train) / len(rpn_loss_train),
+                "total_loss": sum(total_loss) / len(total_loss)
+                })
         
-        # Validation phase
-        model.eval()
-        validation_images = []
-        with torch.no_grad():
-            for images, targets in tqdm.tqdm(val_loader, desc="Validation"):
-                validation_images = [img.to(gpu_id) for img in images]  # Send images to the device
-                targets = [{k: v.to(gpu_id) for k, v in t.items()} for t in targets]  # Send targets to the device
-                
-                # Inference on validation data
-                predictions = model(validation_images)
-                print(predictions)  # Check predictions for debugging
-                
-                # Optionally visualize results using `wandb`
-                bb_img = show(validation_images, predictions)  # Function to display bounding boxes on image
-                for i, img in enumerate(bb_img):
-                    wandb.log({
-                        f"validation_image_{i}": wandb.Image(np.asarray(img), caption=f"Epoch {epoch} Image {i}")
-                    })
-                break  # Remove this `break` to evaluate on the entire validation set
+            # Validation phase
+            model.eval()
+            validation_images = []
+            with torch.no_grad():
+                for images, targets in tqdm.tqdm(val_loader, desc="Validation"):
+                    validation_images = [img.to(gpu_id) for img in images]  # Send images to the device
+                    targets = [{k: v.to(gpu_id) for k, v in t.items()} for t in targets]  # Send targets to the device
+                    
+                    # Inference on validation data
+                    predictions = model(validation_images)
+                    print(predictions)  # Check predictions for debugging
+                    
+                    # Optionally visualize results using `wandb`
+                    bb_img = show(validation_images, predictions)  # Function to display bounding boxes on image
+                    for i, img in enumerate(bb_img):
+                        wandb.log({
+                            f"validation_image_{i}": wandb.Image(np.asarray(img), caption=f"Epoch {epoch} Image {i}")
+                        })
+                    break  # Remove this `break` to evaluate on the entire validation set
         
-        # Save model checkpoint after each epoch
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.module.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': losses.item(),  # Save the scalar loss value
-        }, SAVE_DIR + f"model_{epoch}.pth")
+            # Save model checkpoint after each epoch
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.module.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': losses.item(),  # Save the scalar loss value
+            }, SAVE_DIR + f"model_{epoch}.pth")
 
 def main(rank, world_size):
     NUM_CLASSES = 8
     EPOCHS = 50
-    BATCH_SIZE = 5
+    BATCH_SIZE = 8
     LR = 0.001
     MOMENTUM = 0.9
     WEIGHT_DECAY = 0.0005
     GAMMA = 0.1
     STEP_SIZE = 5
     SAVE_DIR = "/data_hdd2/users/hassan/projects/acquarium/chkpts_DCNN_CUSTOM/"
-    
     IMG_DIR_TRAIN = "/data_hdd2/users/hassan/projects/acquarium/data/acqurium/"
-
     IMG_DIR_VALID = "/data_hdd2/users/hassan/projects/acquarium/data/acqurium/"
 
     setup(rank, world_size)
-    wandb.init(project="aquarium", entity="ciir", group="DCNN")
+    if rank == 0:
+        wandb.init(project="aquarium", entity="ciir", group="DCNN")
+    else:
+        pass
     train(NUM_CLASSES, EPOCHS, BATCH_SIZE, LR, MOMENTUM, WEIGHT_DECAY, GAMMA, STEP_SIZE, SAVE_DIR, IMG_DIR_TRAIN, IMG_DIR_VALID, rank)
     destroy_process_group()
 
